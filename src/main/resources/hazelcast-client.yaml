@@ -1,0 +1,81 @@
+# NOTE — configuration de la map `televerse-thumbnails` (cache des vignettes)
+#
+# Un client Hazelcast ne peut pas déclarer de `map` : `getConfig()` lève
+# UnsupportedOperationException en mode client. La conf ci-dessous doit donc être
+# posée sur les MEMBRES du cluster (hazelcast.yaml côté namespace Hazelcast) :
+#
+#   map:
+#     televerse-thumbnails:
+#       backup-count: 0          # vignette perdue = régénérée depuis le PDF S3
+#       eviction:
+#         eviction-policy: LRU
+#         max-size-policy: PER_NODE
+#         size: 20000            # ~160 Mo/membre à 8 ko l'entrée
+#
+# Sans cette conf le cache FONCTIONNE quand même (défauts Hazelcast :
+# backup-count 1, pas d'éviction) — mais l'empreinte double et rien ne borne la
+# croissance sous pic. Le TTL par entrée, lui, est posé à l'écriture par
+# ThumbnailCacheService et ne dépend d'aucune conf cluster.
+#
+# Dimensionnement : ~8 ko par vignette (mesuré à 120 px / JPEG q=0.75), jusqu'à
+# 3 entrées par page (vivante, -prev, -init), 20 pages max par session.
+hazelcast-client:
+  instance-name: ge-televerse
+  cluster-name: hazelcast-cluster
+  properties:
+    # Invocations client→membres en vol simultanément, TOUTES opérations confondues
+    # (sessions, originators, vignettes, topic). Au-delà : HazelcastOverloadException.
+    # Le défaut Hazelcast est Integer.MAX_VALUE, autant dire aucune borne ; on garde
+    # une borne réelle, mais dimensionnée sur la charge attendue par pod :
+    #
+    #   ~130  ops synchrones — withSessionLock (lock/get/put/setTtl/unlock) tourne sur
+    #         Schedulers.boundedElastic(), plafonné par défaut à 10 × vCPU. Un appel
+    #         synchrone = une invocation en vol par thread.
+    #   ~400  purges de fin de session — ThumbnailCacheService.PURGE_CONCURRENCY (4)
+    #         × app.admission.finalize.max-concurrent (100). C'est un PRODUIT : toute
+    #         hausse de l'un ou l'autre se paie ici au centuple.
+    #   ~120  vignettes get/put en régime (upload / aperçu / édition)
+    #   ─────
+    #   ~650, ×1.5 de marge (redo-operation retransmet, donc reconsomme des slots)
+    #
+    hazelcast.client.max.concurrent.invocations: 1000
+    hazelcast.client.max.message.size: 512000
+    hazelcast.client.cp.subsystem.enabled: true
+    # Détection de panne d'une connexion client→membre. Les défauts Hazelcast
+    # (heartbeat.timeout 60 s, invocation.timeout 120 s) sont calibrés pour un
+    # cluster embarqué, pas pour un client à un saut réseau d'un cluster d'un
+    # autre namespace. Chaque pod est son propre client : une connexion devenue
+    # muette vers UN membre (membre redémarré, nœud drainé, reset SDN) laissait
+    # les invocations de CE pod vers les clés de CE membre attendre 60 s avant
+    # fermeture, puis rejeu (redo-operation) jusqu'à 120 s — l'autre pod, lui,
+    # répondait. Vu du navigateur, derrière le répartiteur : une lenteur
+    # « sporadique », sans charge. Les messages capturés dans
+    # HazelcastClientNoiseFilterTest en portent la trace (« connexion fermée »,
+    # « double-complete » après « client invocation timeout 120000 ms »).
+    #
+    # heartbeat.interval : cadence des pings client→membre. C'est le défaut,
+    #   rappelé ici pour que le rapport avec le timeout se lise.
+    # heartbeat.timeout : silence maximal d'un membre avant fermeture de la
+    #   connexion, puis reconnexion et rejeu des invocations en vol. Quatre
+    #   intervalles : de quoi absorber une pause GC d'un membre, pas de quoi
+    #   figer un pod.
+    # invocation.timeout.seconds : durée maximale d'une invocation, rejeux
+    #   compris, avant OperationTimeoutException. Doit rester NETTEMENT au-dessus
+    #   d'app.session-lock.wait (2 s, attendus côté membre par un tryLock) et
+    #   sous app.edit-timeout (20 s), pour que l'échec Hazelcast soit qualifié
+    #   avant la borne applicative plutôt que masqué par elle.
+    hazelcast.client.heartbeat.interval: 5000
+    hazelcast.client.heartbeat.timeout: 20000
+    hazelcast.client.invocation.timeout.seconds: 10
+  network:
+    smart-routing: true
+    redo-operation: true
+    kubernetes:
+      enabled: true
+      # Mode DNS-based discovery : pas d'appel à l'API Kubernetes (donc pas de
+      # RBAC à mettre en place sur le namespace cible). `service-dns` est
+      # surchargé au runtime par HazelcastConfiguration à partir de l'env var
+      # HAZELCAST_NAMESPACE injectée par le manifest Helm — la FQDN construite
+      # vise le headless service `hazelcast` du namespace dédié.
+      service-dns-timeout: 10
+    connection-timeout: 1000

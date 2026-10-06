@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+	<!-- Promeut le WARN bruyant "throwIfFatal detected a jvm fatal exception"
+	     en ERROR concis (cf. ReactorFatalErrorFilter). -->
+	<turboFilter class="ch.ge.ael.geteleverse.config.logging.ReactorFatalErrorFilter"/>
+
+	<!-- Réduit à une ligne les WARN du client Hazelcast porteurs d'une stacktrace
+	     18 frames entièrement interne (cf. HazelcastClientNoiseFilter). -->
+	<turboFilter class="ch.ge.ael.geteleverse.config.logging.HazelcastClientNoiseFilter"/>
+
+	<!-- Console appender -->
+	<appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+		<encoder>
+			<!-- Pas de %thread : en réactif le travail saute de scheduler en
+			     scheduler (boundedElastic-N, reactor-http-epoll-N) — l'info
+			     est bruyante et rarement actionnable.
+
+			     Tout UUID est réduit à ses 8 premiers caractères, dans le message
+			     comme dans la trace d'exception : le token de session est un
+			     jeton porteur (il donne accès à la session, et figure dans chaque
+			     URL, chaque clé S3, une soixantaine de lignes de log), le
+			     documentId donne le document à qui détient un JWT AEL.TELEVERSE.
+			     Le préfixe suffit à corréler les lignes d'une session. Masquer ici
+			     plutôt qu'à chaque appel couvre aussi les logs de bibliothèques et
+			     les lignes à venir. Le %ex imbriqué dans %replace suffit : logback
+			     n'ajoute alors pas de seconde trace, en clair (vérifié par
+			     LogMaskingTest). -->
+			<pattern>%date{HH:mm:ss.SSS} %highlight(%-5level) %replace(%msg){'([0-9a-fA-F]{8})-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', '$1…'} %cyan([%logger{5}]) %n%replace(%ex){'([0-9a-fA-F]{8})-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', '$1…'}</pattern>
+		</encoder>
+	</appender>
+
+	<!-- Définition du niveau de log -->
+	<root level="ERROR">
+		<appender-ref ref="STDOUT" />
+	</root>
+</configuration>

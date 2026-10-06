@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+	<!-- Console appender -->
+	<appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+		<encoder>
+			<!-- Ajout du thread dans le pattern avec %thread -->
+			<pattern>%date{HH:mm:ss.SSS} %highlight(%-5level) [%thread] %msg %cyan([%logger{5}]) %n</pattern>
+		</encoder>
+	</appender>
+
+	<!-- Définition du niveau de log -->
+	<root level="INFO">
+		<appender-ref ref="STDOUT" />
+	</root>
+</configuration>

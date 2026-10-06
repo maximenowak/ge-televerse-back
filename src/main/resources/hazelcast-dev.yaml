@@ -1,0 +1,32 @@
+hazelcast:
+  cluster-name: hazelcast-cluster
+  instance-name: toto
+  network:
+    join:
+      multicast:
+        enabled: false
+      tcp-ip:
+        enabled: false
+        interface: 127.0.0.1
+        member-list:
+          - 127.0.0.1
+  map:
+    ttl10*:
+      max-idle-seconds: 10
+    ttl30*:
+      max-idle-seconds: 30
+    # Cache des vignettes de pages (~8 ko par entrée, jusqu'à 3 par page :
+    # vivante, -prev, -init). Configuration identique à celle qui doit être
+    # posée côté cluster en prod — voir le commentaire dans hazelcast-client.yaml.
+    televerse-thumbnails:
+      # Aucune réplique : une vignette perdue se régénère depuis le PDF de la
+      # page (S3). Payer un backup doublerait l'empreinte mémoire du cluster
+      # pour protéger une donnée jetable.
+      backup-count: 0
+      # Éviction LRU sur seuil : borne dure de l'empreinte. Au-delà, le cluster
+      # évince les vignettes les plus froides au lieu de saturer — la dégradation
+      # est une régénération, pas une panne.
+      eviction:
+        eviction-policy: LRU
+        max-size-policy: PER_NODE
+        size: 20000

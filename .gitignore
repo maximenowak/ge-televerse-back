@@ -1,0 +1,43 @@
+HELP.md
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+version.txt
+/logs/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+# .m2/ est entièrement généré par la chaîne d'intégration (settings.xml canonique
+# + cache local des dépendances). Il porte les credentials du dépôt d'artefacts et
+# n'a rien à faire dans l'arborescence de travail.
+/.m2/
+
+# POM aplati généré par flatten-maven-plugin (résolution de ${revision})
+/.flattened-pom.xml
+/docs/security/

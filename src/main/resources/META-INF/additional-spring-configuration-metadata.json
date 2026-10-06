@@ -1,0 +1,36 @@
+{
+  "properties": [
+    {
+      "name": "app.session-ttl",
+      "type": "java.lang.String",
+      "description": "Description for app.session-ttl."
+    },
+    {
+      "name": "app.cleanup-interval",
+      "type": "java.lang.String",
+      "description": "Description for app.cleanup-interval."
+    },
+    {
+      "name": "app.sse-heartbeat-interval",
+      "type": "java.lang.String",
+      "description": "Description for app.sse-heartbeat-interval."
+    },
+    {
+      "name": "app.cors.allowed-origins",
+      "type": "java.lang.String",
+      "description": "Description for app.cors.allowed-origins."
+    },
+    {
+      "name": "app.tmp.health-threshold",
+      "type": "org.springframework.util.unit.DataSize",
+      "description": "Seuil au-dessus duquel /actuator/health passe en DOWN sur la fuite de fichiers tmp Ghostscript. Défaut 5GB.",
+      "defaultValue": "5GB"
+    },
+    {
+      "name": "app.originator.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Active le verrou « une session par IP d'origine » (XFF). Mettre à false pour load tests représentatifs avec sessions parallèles depuis la même IP. Défaut true.",
+      "defaultValue": true
+    }
+  ]
+}

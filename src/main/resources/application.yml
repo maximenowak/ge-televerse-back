@@ -1,0 +1,552 @@
+server:
+  ssl:
+    enabled: false
+  port: 8080
+  shutdown: graceful
+
+app:
+  session-ttl: PT5M # (ISO-8601 duration)
+  cleanup-interval: PT1M # intervalle de nettoyage des sessions expirées
+  # Intervalle entre deux émissions d'événement SSE `heartbeat` sur chaque sink
+  # actif. Force la détection des connexions zombies (proxies d'entreprise
+  # coupant l'idle HTTP sans propager le FIN). Doit rester < timeout des
+  # proxies (~30-60 s).
+  sse-heartbeat-interval: PT15S
+  finalize-timeout: PT2M # délai max pour la fusion PDF à la finalisation
+  # Délai max d'une édition de page (rotate / crop / deskew / white-balance).
+  # Le chemin enchaîne un GET S3, une passe CPU native (PDFBox + OpenCV + ONNX
+  # pour le deskew), ~5 aller-retours S3 et une section verrouillée Hazelcast :
+  # sans borne, la moindre lenteur sur l'un de ces maillons laissait la requête
+  # en vol indéfiniment — « pending » côté navigateur, aucune trace côté pod,
+  # et un permis du bulkhead `edit` immobilisé pour rien.
+  # DOIT rester SOUS le timeout HTTP du client, sinon le front abandonne la
+  # socket avant la réponse et ne peut plus distinguer un dépassement serveur
+  # d'une coupure réseau. ge-televerse-front donne au chemin d'édition son
+  # propre plafond (EDIT_TIMEOUT_MS, 35 s) plutôt que celui du client axios
+  # (30 s), justement pour garder de la marge au-dessus de cette borne : les
+  # deux valeurs sont à faire évoluer ensemble.
+  # Dépassement → 504 EDIT_TIMEOUT + compteur televerse.edit.timeouts{op}.
+  edit-timeout: ${APP_EDIT_TIMEOUT:PT20S}
+  # Délai max d'une annulation (undo / reset). Volontairement PLUS SERRÉ
+  # qu'edit-timeout : ces deux chemins ne font ni rendu PDFBox ni passe native,
+  # seulement une copie S3 côté serveur (les octets ne transitent pas par le pod),
+  # une suppression et la section verrouillée d'updatePage. Leur donner le budget
+  # d'un deskew ferait patienter l'utilisateur 20 s avant de lui dire quoi que ce
+  # soit, pour un travail qui tient normalement en quelques centaines de ms.
+  # Surtout : c'est le geste de RATTRAPAGE, tenté juste après l'échec d'une
+  # édition, donc sur un pod déjà dégradé — il doit rendre la main vite.
+  # Dépassement → 504 EDIT_TIMEOUT + compteur televerse.edit.timeouts{op=undo|reset}.
+  # Pas de bulkhead sur ce chemin : il ne renvoie jamais EDIT_BUSY (cf. withUndoBound).
+  undo-timeout: ${APP_UNDO_TIMEOUT:PT10S}
+  session-lock:
+    # Verrou Hazelcast pris par toute mutation de session (attache de page,
+    # édition, suppression, réordonnancement). `IMap.lock` attendait sans limite :
+    # deux opérations concurrentes sur la même session se sérialisent en quelques
+    # ms en régime normal, mais si la détentrice traîne (pod throttlé, cluster
+    # lent) les autres attendaient pour toujours, permis de bulkhead en main.
+    # Dépassement → 429 SESSION_BUSY + Retry-After.
+    wait: ${APP_SESSION_LOCK_WAIT:PT2S}
+    # Bail du verrou : le cluster le rend d'office passé ce délai, même si le
+    # détenteur meurt en section critique. À garder NETTEMENT au-dessus de la
+    # durée d'une section (get + put Hazelcast), sinon l'unlock final n'a plus
+    # de titulaire — cas logué en WARN par SessionService.
+    lease: ${APP_SESSION_LOCK_LEASE:PT30S}
+    # Retry-After annoncé au client sur rejet.
+    retry-after: ${APP_SESSION_LOCK_RETRY_AFTER:PT1S}
+  thumbnail-width: 120 # largeur en pixels des vignettes pré-stockées
+  preview-width: 800 # largeur en pixels de l'aperçu généré à la volée (jamais piloté par le client)
+  thumbnail-cache:
+    # Les vignettes vivent dans l'IMap Hazelcast `televerse-thumbnails`, pas sur S3.
+    # Motif : ~8 ko pièce mais l'objet le plus lu du flux (une requête par page à
+    # chaque ouverture de la liste). Les servir depuis S3 saturait le lien vers le
+    # stockage objet vers 4000 usagers simultanés (sockets coupées, 404 suspects)
+    # pour du contenu qui ne survit pas à la session. L'IMap étant distribué, une
+    # vignette écrite par le pod qui a reçu l'upload reste lisible par le pod qui
+    # sert la requête suivante — ce que le disque local (déjà sous pression
+    # Ghostscript) ne permettrait pas.
+    #
+    # C'est un CACHE : toute vignette est reconstructible depuis le PDF de la page,
+    # qui lui reste sur S3. Un défaut coûte une régénération, jamais une erreur.
+    # Coupe-circuit d'exploitation : APP_THUMBNAIL_CACHE_ENABLED=false renvoie tout
+    # le trafic vignette vers la régénération à la volée sans redéploiement.
+    enabled: true
+    # TTL d'une entrée. Doit rester NETTEMENT au-dessus de `app.session-ttl` (5 min) :
+    # ce dernier est repoussé à chaque activité, donc une vignette posée au premier
+    # upload doit survivre à une session prolongée par des éditions successives.
+    # La purge explicite à la finalisation (et à la suppression de page / expiration)
+    # rend la mémoire bien avant ce délai ; le TTL n'est que le filet.
+    ttl: PT30M
+  image:
+    # Résolution cible (DPI) appliquée aux images et documents entrants.
+    # La dimension max en pixels = hauteur A4 (297 mm) au DPI choisi. 150 DPI → 1754 px.
+    dpi: 300
+    # Qualité JPEG des images embarquées dans le PDF (0.0 - 1.0). 0.75 = bon compromis
+    # taille/lisibilité pour des documents administratifs.
+    jpeg-quality: 0.75
+    # Threads du pool parallel_for d'OpenCV. 0 = les vCPU vus par la JVM, donc le
+    # quota CPU du pod. OpenCV, lui, lit le nombre de cœurs de la MACHINE et ignore
+    # le cgroup : sur un gros nœud, chaque appel démarrait un pool large comme le
+    # nœud, multiplié par les éditions en vol (app.admission.edit.max-concurrent).
+    # Sur-souscription → throttling cgroup → latences erratiques et silencieuses.
+    opencv-threads: ${APP_IMAGE_OPENCV_THREADS:0}
+    # Threads intra-opérateur d'ONNX Runtime, par inférence DocAligner. Même
+    # cécité au cgroup qu'OpenCV. 1 par défaut : le parallélisme utile vient déjà
+    # des requêtes concurrentes, pas de l'intérieur d'une inférence.
+    onnx-intra-op-threads: ${APP_IMAGE_ONNX_INTRA_OP_THREADS:1}
+  upload:
+    # Extensions de fichiers autorisées en upload. Vérification côté back par
+    # extension du nom (case-insensitive), indépendante du Content-Type envoyé
+    # par le client. La liste est aussi exposée via GET /api/upload/formats pour
+    # que les fronts l'alignent dynamiquement sans dupliquer la valeur côté JS.
+    # Surchargeable via env var APP_UPLOAD_ALLOWED_FORMATS (CSV).
+    allowed-formats:
+      - pdf
+      - jpg
+      - jpeg
+      - png
+      - tiff
+  limits:
+    # Garde-fou anti-abus, indépendant du tee-shirt size
+    max-pages: 20
+    # Plafond strict d'un fichier multipart (un upload), appliqué par le codec via
+    # spring.webflux.multipart.max-disk-usage-per-part (qui référence cette valeur).
+    # Les sessions L et XL doivent être construites en empilant plusieurs uploads.
+    multipart-ceiling: 50MB
+    # Tailles totales cumulées par session, sélectionnées par le client à la création
+    profiles:
+      S:  { max-total-size: 5MB }
+      M:  { max-total-size: 15MB }
+      L:  { max-total-size: 50MB }
+      XL: { max-total-size: 200MB }
+  cors:
+    # Origines autorisées en CORS. En prod tout est same-origin (la SPA et le
+    # mobile partagent l'hôte de l'API via la route /api), donc cette liste
+    # n'est utile que pour bloquer les appels cross-origin d'audit ou de
+    # scripts externes — pas pour autoriser des intégrations cross-domain
+    # légitimes (le webcomponent ne fait que window.open + postMessage).
+    #
+    # Seule l'origine de production figure ici. Les environnements non productifs
+    # (intégration, recette) ajoutent la leur via l'env var
+    # APP_CORS_ALLOWED_ORIGINS (CSV), posée par le manifeste de déploiement :
+    # les hôtes internes n'ont pas à être versionnés. Attention, l'env var
+    # REMPLACE la liste — y remettre l'origine de production si elle s'applique.
+    allowed-origins:
+      - https://televerser.app.ge.ch
+  same-origin:
+    # Verrou server-side : refuse les requêtes non-document dont le header
+    # Origin != https://<Host> courant. Défense en profondeur derrière CORS —
+    # CORS protège le navigateur (préflight), ce filtre coupe aussi les appels
+    # cross-origin server-side sans préflight et donne le point de contrôle
+    # explicite que réclament les audits KICS/Sonar. /api/documents/** est
+    # exempté (frontière = JWT). Repose sur l'intégrité du header Host garantie
+    # par le firewall — même hypothèse d'infra que le XFF de l'originator.
+    enabled: true
+    # Hôtes supplémentaires acceptés en plus du Host courant (sondes externes
+    # nommées, monitoring tiers qui poseraient un Origin). Vide par défaut.
+    # Surchargeable via env var APP_SAME_ORIGIN_ALLOWED_EXTRA_HOSTS (CSV).
+    allowed-extra-hosts: []
+  session-create:
+    # Realm cross-origin autorisé à créer une session. Le webcomponent
+    # <ge-televerse> embarqué sur un formulaire hôte appelle POST /sessions
+    # directement : le navigateur estampille alors l'Origin RÉEL du formulaire
+    # (infalsifiable côté usager), et c'est cet Origin qui gouverne le profil de
+    # taille (cf. `profiles`). CORS + verrou same-origin acceptent ces suffixes
+    # pour la CRÉATION uniquement (POST /sessions) — pas pour upload/finalize/etc.
+    # Frontière de label : `.ge.ch` matche `x.ge.ch` et l'apex `ge.ch`, jamais
+    # `evil-ge.ch`. Le point initial est optionnel.
+    # Surchargeable via env var APP_SESSION_CREATE_ALLOWED_ORIGIN_SUFFIXES (CSV).
+    allowed-origin-suffixes:
+      - .ge.ch
+      - .etat-ge.ch
+    # Whitelist fine : profil de taille DÉRIVÉ du suffixe d'Origin — JAMAIS de la
+    # valeur envoyée par le client (éditable par l'usager → auto-escalade). Le
+    # suffixe le plus spécifique (le plus long) qui matche gagne ; toute origine
+    # hors liste reçoit S. Renseigner ici les domaines hôtes ayant droit à plus
+    # que S. Exemple :
+    #   profiles:
+    #     - { suffix: .demarches.etat-ge.ch, profile: L }
+    #     - { suffix: .ge.ch,                profile: M }
+    profiles: []
+  ghostscript:
+    # Nom du binaire (résolu via le PATH). Surchargé en `gswin64c` sur le profil dev (Windows).
+    binary-name: gs
+    # PDF en dessous de ce seuil : pas de recompression (gain marginal, overhead de gs). APP_GHOSTSCRIPT_SIZE_THRESHOLD
+    size-threshold: 200KB
+    # Nombre maximal de processus gs concurrents. Règle : N_workers = vCPU - 1.
+    workers: 12
+    # Profondeur de la file d'attente du scheduler borné. Au-delà → fallback original.
+    queue-size: 50
+    # Timeout par appel gs (ISO-8601). Mesuré ~2.15s pour 9 MB → 15s laisse 7× de marge.
+    timeout: PT15S
+    # Preset Ghostscript de base : /screen, /ebook, /printer, /prepress. Fournit les défauts
+    # (AutoFilter, sous-échantillonnage chroma, QFactor 0.76 ≈ qualité JPEG 0.75 du chemin image).
+    # Le service force en plus -dColorConversionStrategy=/LeaveColorUnchanged (sinon /ebook détruit
+    # les groupes de transparence) et surcharge la résolution ci-dessous.
+    pdf-settings: /ebook
+    # Résolution cible du sous-échantillonnage des images couleur/gris. Le preset /ebook plafonne
+    # à 150 DPI (trop agressif, perte de détail). On aligne sur app.image.dpi (300) pour une qualité
+    # homogène entre conversion image→PDF et recompression PDF. APP_GHOSTSCRIPT_IMAGE_RESOLUTION_DPI
+    image-resolution-dpi: 300
+  admission:
+    upload:
+      # Capacité dure : nombre maximal d'uploads concurrents par pod. Règle empirique :
+      # vCPU × 2 (laisse de la marge CPU pendant l'attente I/O sur S3). Tuner après load test.
+      max-concurrent: 8
+      # Attente max d'un permis avant fast-fail 429. Volontairement court : préfère
+      # renvoyer 429 que faire patienter — la file ne fait que différer un pic soutenu.
+      max-wait: PT0.2S
+      # Header Retry-After renvoyé au client lors d'un rejet 429.
+      retry-after: PT2S
+    edit:
+      # Capacité dure : nombre maximal d'éditions concurrentes par pod (rotate / crop /
+      # deskew / white-balance). Chaque édition fait ~5 aller-retours S3 + un render PDFBox,
+      # donc elle pèse sur le pool de connexions S3 et la mémoire au même titre qu'un upload.
+      # Bulkhead SÉPARÉ de l'upload : régler pour que upload.max-concurrent + edit.max-concurrent
+      # reste dans le budget CPU/mémoire du pod. Rejet → 429 EDIT_BUSY. Tuner après load test.
+      max-concurrent: 8
+      # Attente max d'un permis avant fast-fail 429 (même logique que l'upload).
+      max-wait: PT0.2S
+      # Header Retry-After renvoyé au client lors d'un rejet 429.
+      retry-after: PT2S
+    merge:
+      # Capacité dure : nombre maximal d'APERÇUS multi-pages concurrents par pod —
+      # aperçu preview.pdf (mergePagesPreview) et rendu de vignette à la volée (generatePreview).
+      # Chacun télécharge N pages depuis S3 + merge/render PDFBox. La finalisation a son PROPRE
+      # bulkhead (app.admission.finalize) car elle retient un permis bien plus longtemps.
+      # Rejet → 429 MERGE_BUSY. Tuner après load test.
+      max-concurrent: 100
+      # Attente max d'un permis avant fast-fail 429 (même logique que l'upload).
+      max-wait: PT0.2S
+      # Header Retry-After renvoyé au client lors d'un rejet 429.
+      retry-after: PT2S
+    finalize:
+      # Capacité dure : nombre maximal de finalisations concurrentes par pod (mergeAndFinalize :
+      # fetch de toutes les pages + merge + upload composite + purge). Bulkhead SÉPARÉ des aperçus
+      # car un permis de finalisation est retenu bien plus longtemps (jusqu'à app.finalize-timeout,
+      # défaut 2 min) : les regrouper affamerait les aperçus interactifs. Cette rétention plus longue
+      # peut justifier un max-concurrent plus élevé que les autres. Rejet → 429 FINALIZE_BUSY.
+      # upload + edit + merge + finalize partagent le budget CPU/mémoire du pod. Tuner après load test.
+      max-concurrent: 100
+      # Attente max d'un permis avant fast-fail 429 (même logique que l'upload).
+      max-wait: PT0.2S
+      # Header Retry-After renvoyé au client lors d'un rejet 429.
+      retry-after: PT2S
+  hazelcast:
+    # Namespace où vit le cluster Hazelcast (différent du namespace de l'app).
+    # Injecté par le manifest Helm de chaque environnement (dev / uat / prod).
+    # Surcharge programmatiquement la valeur lue depuis hazelcast-client.yaml.
+    namespace: ${HAZELCAST_NAMESPACE}
+  antivirus:
+    # Active le probe au démarrage, le re-probe périodique et le scan INSTREAM
+    # de chaque upload. Quand `enabled=false`, le service log « disabled »
+    # au démarrage et `scan(...)` est un no-op — utile en dev local.
+    enabled: true
+    # DNS courte du service clamd dans le même namespace que l'app.
+    # Surchargeable via env var pour pointer un autre namespace si besoin.
+    host: ${ANTIVIRUS_HOST:clamav-svc}
+    # Port natif clamd. La lib parle TCP INSTREAM directement.
+    port: ${ANTIVIRUS_PORT:3310}
+    # Timeout d'un PING (probe au démarrage et re-probe périodique). La lib
+    # n'expose pas de connect-timeout : AntivirusService enveloppe chaque ping
+    # dans un Future borné par cette valeur pour ne pas figer le pod si clamd
+    # est blackholé. Volontairement court — un PING qui traîne signale un vrai
+    # problème, pas une charge légitime.
+    timeout: PT5S
+    # Timeout d'un scan INSTREAM. Distinct de `timeout` : couvre le worst-case
+    # d'un push de `maxStreamSize` (60 MB) sur TCP + le scan côté clamd, qui
+    # prend plusieurs secondes pour un PDF de taille réelle. Une valeur trop
+    # courte (ex. 5 s) coupe le socket en plein scan et déclenche faussement
+    # le fail-mode → 503 sur des uploads pourtant légitimes.
+    scan-timeout: PT30S
+    # Doit rester ≥ app.limits.multipart-ceiling (50 MB), sinon clamd tronque
+    # silencieusement le flux → faux négatif. Aligner avec StreamMaxLength
+    # côté clamd.conf (le client ne pousse pas cette valeur, c'est un contrat).
+    max-stream-size: 60MB
+    # closed : scan en échec (clamd injoignable / timeout) → 503 ANTIVIRUS_UNAVAILABLE.
+    # open   : scan en échec → WARN + upload accepté (uniquement pour dégradation maîtrisée).
+    # Une infection avérée reste bloquée indépendamment du fail-mode.
+    fail-mode: closed
+    # Période de re-probe PING entre deux uploads. Alimente la gauge
+    # televerse.av.available — alerte si =0 pendant > 1 min.
+    probe-interval: PT30S
+  rate-limit:
+    session-create:
+      # Token bucket par IP d'origine sur POST /sessions, anti-DoS.
+      # Une création nominale consomme 1 jeton, ?force=true en consomme
+      # `force-cost`. Bucket par-pod (mémoire locale) : un attaquant qui
+      # round-robin sur N pods voit au pire N × le débit. Le LB d'État
+      # applique une affinité IP source qui réduit cet écart en pratique.
+      enabled: true
+      # Burst max instantané depuis une IP fraîche. 10 = laisse de la marge
+      # pour les retries usagers (création, scan, finalize) sans laisser
+      # un script en abuser.
+      capacity: 10
+      # Refill stationnaire : 10/min = 1 jeton toutes les 6 s.
+      refill-tokens-per-minute: 10
+      # Coût d'un ?force=true. 5 ⇒ ~2 forces/min en régime permanent,
+      # cap qui correspond à l'usage humain réaliste mais qui désactive
+      # l'attaque « boucler sur force pour churner les sessions ».
+      # Pairé avec la métrique d'observation televerse.originator.force
+      # pour fermer la fenêtre DoS sur ce chemin.
+      force-cost: 5
+      # Éviction des buckets pleins et inactifs depuis cette durée. Borne
+      # la consommation mémoire face à un scan d'IPs. Tick `@Scheduled`
+      # aligné sur la même valeur.
+      idle-eviction: PT10M
+  originator:
+    # Active le verrou « une session par IP d'origine ».
+    # Quand true (défaut), POST /sessions extrait l'IP depuis X-Forwarded-For
+    # (posé par le firewall) et bloque toute deuxième session pour la même IP
+    # tant que la première n'est pas finalisée / supprimée / expirée.
+    # Mettre à false pour les load tests qui simulent plusieurs sessions
+    # parallèles depuis le même poste.
+    enabled: true
+  security:
+    # Active la chaîne Spring Security WebFlux. Quand true, /api/documents/**
+    # exige un JWT valide ; les autres routes restent permitAll (verrou
+    # same-origin assuré par la config CORS). Mettre à false en dev local
+    # pour éviter d'avoir à fournir un JWT signé.
+    enabled: true
+    # Audience attendue dans le claim `aud` du JWT pour le GET document.
+    # Mêmes conventions de nommage que api-config / api-usager : AEL.<APP>.
+    jwt-audience: AEL.TELEVERSE
+
+spring:
+  task:
+    scheduling:
+      # Pool des tâches @Scheduled : heartbeats SSE, balayage des sinks expirés,
+      # sonde antivirus (jusqu'à 5 s), moniteur /tmp, éviction du rate-limit. Le
+      # défaut de Boot est UN thread : un balayage ralenti par Hazelcast y suspendait
+      # les heartbeats, et proxies (30-60 s d'inactivité) comme watchdog du front
+      # (35 s) coupaient alors tous les flux SSE du pod. Une tâche par thread, marge
+      # comprise. Cf. SchedulingPoolTest.
+      pool:
+        size: 5
+      thread-name-prefix: televerse-sched-
+  webflux:
+    base-path: /api
+    # Plafonds du codec multipart : première borne d'ingestion, avant toute logique
+    # métier (DoS, saturation du disque du pod, que Ghostscript partage). Les poser
+    # ICI et nulle part ailleurs : le CodecCustomizer de Boot réécrit tout
+    # DefaultPartHttpMessageReader avec ces propriétés, y compris un lecteur configuré
+    # à la main — c'est ainsi qu'un WebFluxConfigurer maison laissait les uploads sans
+    # borne (défauts Boot : -1 = illimité). Cf. MultipartLimitsTest.
+    multipart:
+      # Un upload = un fichier. Au-delà : 400 INVALID_MULTIPART.
+      max-parts: 1
+      # Plafond par fichier, piloté par app.limits.multipart-ceiling. Doit rester
+      # ≤ app.antivirus.max-stream-size et StreamMaxLength (clamd), pour qu'un fichier
+      # accepté soit toujours intégralement scanné. Au-delà : 413 FILE_TOO_LARGE.
+      max-disk-usage-per-part: ${app.limits.multipart-ceiling}
+      # Au-delà, la part déborde sur disque (répertoire temporaire du pod).
+      max-in-memory-size: 256KB
+      max-headers-size: 8KB
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.hazelcast.HazelcastAutoConfiguration
+      # Le décodeur JWT est câblé exclusivement par ResourceServerConfiguration
+      # (conditionné à app.security.enabled, avec validation d'audience).
+      # L'auto-config de Boot considère `jwk-set-uri` « présent » même vide
+      # (${JWK_SET_URI:} sans env var) et instancie alors un décodeur fallback
+      # SANS validation d'audience → crash au démarrage en dev/openapi, et
+      # filet de sécurité indésirable en prod. On l'exclut partout.
+      # Deux entrées, et non une : depuis Boot 4 le décodeur réactif
+      # (ReactiveJwtDecoder) et le décodeur servlet (JwtDecoder) sont portés par
+      # deux auto-configs distinctes, et celle de base n'est conditionnée qu'à la
+      # présence de BearerTokenAuthenticationToken — pas au type d'application.
+      # Elle s'applique donc aussi à une appli réactive et y crée un JwtDecoder
+      # servlet inutile, qui rouvre le crash que l'exclusion visait à empêcher.
+      # NB : cette liste ne fusionne pas entre documents YAML — toute redéfinition
+      # par profil (cf. application-openapi.yml) doit répéter toutes les entrées.
+      - org.springframework.boot.security.oauth2.server.resource.autoconfigure.reactive.ReactiveOAuth2ResourceServerAutoConfiguration
+      - org.springframework.boot.security.oauth2.server.resource.autoconfigure.OAuth2ResourceServerAutoConfiguration
+  messages:
+    encoding: UTF-8
+  main:
+    banner-mode: 'log'
+    allow-bean-definition-overriding: true
+    web-application-type: reactive
+  application:
+    name: ge-televerse
+  ssl:
+    bundle:
+      jks:
+        trustStore:
+          truststore:
+            location: "${javax.net.ssl.trustStore}"
+            password: "${javax.net.ssl.trustStorePassword}"
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${JWK_SET_URI:}
+          issuer-uri: ${ISSUER_URI:}
+  mvc:
+    # SSE async support
+    async:
+      request-timeout: 900000
+  cloud:
+    aws:
+      region:
+        static-region: us-east-1
+      credentials:
+        access-key: ${S3_ACCESS_KEY}
+        secret-key: ${S3_SECRET_KEY}
+      s3:
+        bucket: ${S3_BUCKET}
+        endpoint: ${S3_ENDPOINT}
+      http:
+        # Pool de connexions Netty du SDK AWS (egress S3). Plafonne les requêtes
+        # S3 en vol PAR POD : max-concurrency actives + max-pending-acquires en
+        # file avant rejet ("Maximum pending connection acquisitions exceeded").
+        # À dimensionner selon la capacité de l'endpoint S3 on-prem, pas
+        # selon le nombre de pods. Surveiller les jauges aws.sdk.http.* pour caler
+        # ces valeurs (leased/pending saturés = pool trop petit).
+        max-concurrency: ${S3_MAX_CONCURRENCY:100}
+        max-pending-acquires: ${S3_MAX_PENDING_ACQUIRES:200}
+        read-timeout: ${S3_READ_TIMEOUT:60s}
+        connection-acquisition-timeout: ${S3_CONNECTION_ACQUISITION_TIMEOUT:10s}
+        # read-timeout ne coupe qu'une lecture socket INACTIVE : une réponse qui
+        # arrive au goutte-à-goutte ne le déclenche jamais. Ces deux bornes-ci
+        # plafonnent la durée RÉELLE, sans quoi un appel S3 pouvait ne jamais finir.
+        # api-call-attempt-timeout : une tentative (retries SDK comptés séparément).
+        # Doit rester au-dessus du transfert légitime du plus gros objet écrit —
+        # le PDF composite d'une session XL, jusqu'à 200 MB.
+        api-call-attempt-timeout: ${S3_API_CALL_ATTEMPT_TIMEOUT:60s}
+        # api-call-timeout : l'appel complet, toutes tentatives cumulées. Aligné sur
+        # app.finalize-timeout — aucun appel S3 unitaire ne peut légitimement
+        # dépasser le budget de la finalisation entière, qui en enchaîne plusieurs.
+        api-call-timeout: ${S3_API_CALL_TIMEOUT:120s}
+  jackson:
+    default-property-inclusion: NON_NULL
+    deserialization:
+      fail-on-unknown-properties: false
+    serialization:
+      fail-on-empty-beans: false
+
+management:
+  server:
+    # Surface de gestion isolée sur un port distinct du trafic métier (8080).
+    # /actuator n'est donc atteignable qu'en interne cluster (scrape Prometheus + sondes kubelet sur 9000), jamais
+    # depuis Internet. NB : en WebFlux, un port de gestion séparé n'est PAS couvert
+    # par la SecurityWebFilterChain — la protection repose sur l'isolation réseau.
+    port: 9000
+  endpoint:
+    health:
+      show-details: always
+      show-components: always
+      probes:
+        enabled: true
+      group:
+        startup:
+          include: diskSpace
+        readiness:
+          include: readinessState, diskSpace
+        liveness:
+          include: livenessState
+  endpoints:
+    web:
+      exposure:
+        # Plus d'openapi / swagger-ui : springdoc n'est plus dans le jar de
+        # production (profil Maven openapi-generation seulement, cf. pom.xml).
+        include: health,info,prometheus
+
+logging:
+  # Layout terse adapté à Splunk : pas de PID/thread (bruit), niveau et logger seuls
+  # avant le message. Les messages eux-mêmes utilisent une convention key=value.
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level %logger{36} - %msg%n"
+  level:
+    root: INFO
+    org.springframework: ${LOGLEVEL_SPRING:WARN}
+    ch.ge.ael.geteleverse: ${LOGLEVEL_GETELEVERSE:INFO}
+    http: ${LOGLEVEL_HTTP:WARN}
+    sun.net.www.http.HttpClient: ${LOGLEVEL_HTTP:WARN}
+    sun.net.www.protocol.http: ${LOGLEVEL_HTTP:WARN}
+    org.springframework.http.client: ${LOGLEVEL_HTTP:WARN}
+    # PDFBox émet beaucoup de WARN sur le contenu des PDFs entrants (beads splitter,
+    # fontes substituées, CMaps invalides) — bruit non actionnable côté serveur.
+    org.apache.pdfbox: ${LOGLEVEL_PDFBOX:ERROR}
+    # Client Hazelcast 5.4.0 : sous charge, les WARN « double-complete » (race sur
+    # Future.complete après interruption) et « connexion fermée » (auth cluster en
+    # timeout) sortent avec une stack de 18 frames 100 % interne à Hazelcast.
+    # HazelcastClientNoiseFilter les réduit à une ligne et les ré-émet sous le
+    # logger « hazelcast » ci-dessous — le mettre à ERROR/OFF coupe tout.
+    hazelcast: ${LOGLEVEL_HZ:WARN}
+    # Attention au nom exact : ClientInvocation logue via
+    # Logger.getLogger(ClientInvocationService.class), soit ...impl.spi.ClientInvocationService
+    # et non ...impl.spi.impl.… (cette classe n'existe pas — un logger fantôme
+    # accepte le niveau sans jamais l'appliquer).
+    com.hazelcast.client.impl.spi.ClientInvocationService: ${LOGLEVEL_HZ_INVOCATION:WARN}
+
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+  cloud:
+    aws:
+      credentials:
+        access-key: dev
+        secret-key: dev
+      s3:
+        # Bucket logique utilisé comme préfixe dans les clés stockées sur disque
+        bucket: dev-local
+        # Non utilisé par FakeS3AsyncClient mais requis par le binding
+        endpoint: http://localhost:9000
+  ssl:
+    bundle:
+      jks:
+        trustStore:
+          truststore:
+            # Truststore factice (le bundle n'est pas réellement utilisé en dev,
+            # mais doit être bindable au démarrage)
+            location: classpath:openapi-dummy-truststore.p12
+            password: changeit
+app:
+  cors:
+    # Dev : SPA Parcel sur :1234 → backend sur :8080 (cross-origin local).
+    # Liste large pour ne pas réfléchir au port en debug local.
+    allowed-origins: "*"
+  same-origin:
+    # Désactivé en dev : la SPA Parcel (:1234) appelle le backend (:8080),
+    # jamais same-origin en local. Même logique que cors/security ci-dessous.
+    enabled: false
+  security:
+    # Désactive Spring Security en dev — pas de JWT à fabriquer.
+    enabled: false
+  ghostscript:
+    # Installation Windows locale (gswin64c.exe sur le PATH).
+    # Sur Linux/prod le binaire reste `gs` via la conf principale.
+    binary-name: gswin64c
+  antivirus:
+    # Pas de clamd local en dev : on désactive le probe pour éviter le WARN
+    # « unreachable » au démarrage. Réactivable ponctuellement pour tester
+    # contre un clamd Docker (`docker run -p 3310:3310 clamav/clamav`).
+    enabled: false
+  originator:
+    # Désactivé en dev : un seul poste = une seule IP source, donc la deuxième
+    # création de session dans la même fenêtre TTL (5 min) déclenche un
+    # 409 ORIGINATOR_HAS_ACTIVE_SESSION même après fermeture du popup si le
+    # beforeunload n'a pas eu le temps de fire. Même logique que `security`
+    # et `antivirus` ci-dessus : on garde la feature opérante en prod et on
+    # retire la friction itérative en local.
+    enabled: false
+  rate-limit:
+    session-create:
+      # Désactivé en dev pour la même raison qu'`originator` : toutes les
+      # requêtes locales partagent la même IP source, le bucket sature dès
+      # quelques itérations et bloque sur 429 avec Retry-After.
+      enabled: false
+
+logging:
+  level:
+    root: INFO
+    org.springframework: ${LOGLEVEL_SPRING:INFO}
+    ch.ge.ael.geteleverse: ${LOGLEVEL_GETELEVERSE:INFO}
+    http: ${LOGLEVEL_HTTP:INFO}
+    sun.net.www.http.HttpClient: ${LOGLEVEL_HTTP:WARN}
+    sun.net.www.protocol.http: ${LOGLEVEL_HTTP:WARN}
+    org.springframework.http.client: ${LOGLEVEL_HTTP:WARN}
+    imageprocessing: ${LOGLEVEL_IMAGEPROCESSING:INFO}
+    pdfprocessing: ${LOGLEVEL_PDFPROCESSING:INFO}

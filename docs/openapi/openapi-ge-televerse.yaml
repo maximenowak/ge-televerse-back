@@ -1,0 +1,760 @@
+openapi: 3.1.0
+info:
+  contact:
+    email: opensource@etat.ge.ch
+    name: État de Genève
+  description: "API REST du backend GE-Televerse — scan de documents mobile, conversion\
+    \ PDF, assemblage et stockage S3 pour l'État de Genève."
+  title: GE-Televerse Backend API
+  version: 1.0.13-SNAPSHOT
+servers:
+- description: Environnement de prod
+  url: https://televerser.app.ge.ch/api
+- description: Local
+  url: http://localhost:8080/api
+paths:
+  /documents/{documentId}:
+    delete:
+      operationId: deleteDocument
+      parameters:
+      - in: path
+        name: documentId
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: No Content
+      tags:
+      - document-controller
+    get:
+      operationId: getDocument
+      parameters:
+      - in: path
+        name: documentId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+      tags:
+      - document-controller
+  /sessions:
+    post:
+      operationId: createSession
+      parameters:
+      - in: query
+        name: force
+        required: false
+        schema:
+          type: boolean
+          default: false
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/CreateSessionResponse"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}:
+    delete:
+      operationId: deleteSession
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+      tags:
+      - session-controller
+    get:
+      operationId: getSession
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/SessionView"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/events:
+    get:
+      operationId: subscribe
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            text/event-stream:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ServerSentEventString"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/finalize:
+    post:
+      operationId: finalize
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/FinalizeResponse"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/keep-alive:
+    post:
+      operationId: keepAlive
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/KeepAliveResponse"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/pages/order:
+    put:
+      operationId: reorderPages
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReorderRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ReorderResponse"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/pages/{pageId}:
+    delete:
+      operationId: deletePage
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: pageId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/DeletePageResponse"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/pages/{pageId}/crop:
+    post:
+      operationId: cropPage
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: pageId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/CropResponse"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/pages/{pageId}/deskew:
+    post:
+      operationId: deskewPage
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: pageId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/DeskewResponse"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/pages/{pageId}/reset:
+    post:
+      operationId: resetPage
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: pageId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/UndoResponse"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/pages/{pageId}/rotate:
+    post:
+      operationId: rotatePage
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: pageId
+        required: true
+        schema:
+          type: string
+      - in: query
+        name: direction
+        required: false
+        schema:
+          type: string
+          default: cw
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/RotateResponse"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/pages/{pageId}/thumbnail:
+    get:
+      operationId: getThumbnail
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: pageId
+        required: true
+        schema:
+          type: string
+      - in: query
+        name: preview
+        required: false
+        schema:
+          type: boolean
+      - in: query
+        name: width
+        required: false
+        schema:
+          type: integer
+          format: int32
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                type: string
+                format: byte
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/pages/{pageId}/undo:
+    post:
+      operationId: undoPage
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: pageId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/UndoResponse"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/pages/{pageId}/white-balance:
+    post:
+      operationId: whiteBalancePage
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: pageId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/WhiteBalanceResponse"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/phone-connect:
+    post:
+      operationId: phoneConnect
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/PhoneConnectionResponse"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/phone-disconnect:
+    post:
+      operationId: phoneDisconnect
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/PhoneConnectionResponse"
+          description: OK
+      tags:
+      - session-controller
+  /sessions/{token}/preview.pdf:
+    get:
+      operationId: getPreview
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                type: string
+                format: byte
+          description: OK
+      tags:
+      - session-controller
+  /upload/formats:
+    get:
+      operationId: getAllowedFormats
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/AllowedFormatsResponse"
+          description: OK
+      tags:
+      - upload-controller
+  /upload/{token}:
+    post:
+      operationId: upload
+      parameters:
+      - in: path
+        name: token
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+              required:
+              - file
+      responses:
+        "200":
+          content:
+            '*/*':
+              schema:
+                type: object
+          description: OK
+      tags:
+      - upload-controller
+components:
+  schemas:
+    AllowedFormatsResponse:
+      type: object
+      properties:
+        allowedFormats:
+          type: array
+          items:
+            type: string
+    CreateSessionRequest:
+      type: object
+      properties:
+        sizeProfile:
+          type: string
+          enum:
+          - S
+          - M
+          - L
+          - XL
+    CreateSessionResponse:
+      type: object
+      properties:
+        expiresAt:
+          type: integer
+          format: int64
+        maxPages:
+          type: integer
+          format: int32
+        maxTotalBytes:
+          type: integer
+          format: int64
+        sizeProfile:
+          type: string
+          enum:
+          - S
+          - M
+          - L
+          - XL
+        token:
+          type: string
+        uploadUrl:
+          type: string
+    CropResponse:
+      type: object
+      properties:
+        applied:
+          type: boolean
+        expiresAt:
+          type: integer
+          format: int64
+        maxTotalBytes:
+          type: integer
+          format: int64
+        message:
+          type: string
+        totalBytes:
+          type: integer
+          format: int64
+        undoAvailable:
+          type: boolean
+    DeletePageResponse:
+      type: object
+      properties:
+        expiresAt:
+          type: integer
+          format: int64
+        maxTotalBytes:
+          type: integer
+          format: int64
+        message:
+          type: string
+        totalBytes:
+          type: integer
+          format: int64
+        totalPages:
+          type: integer
+          format: int32
+    DeskewResponse:
+      type: object
+      properties:
+        applied:
+          type: boolean
+        expiresAt:
+          type: integer
+          format: int64
+        maxTotalBytes:
+          type: integer
+          format: int64
+        message:
+          type: string
+        totalBytes:
+          type: integer
+          format: int64
+        undoAvailable:
+          type: boolean
+    FinalizeResponse:
+      type: object
+      properties:
+        documentId:
+          type: string
+        message:
+          type: string
+    KeepAliveResponse:
+      type: object
+      properties:
+        expiresAt:
+          type: integer
+          format: int64
+    PageInfo:
+      type: object
+      properties:
+        contentHash:
+          type: string
+        contentType:
+          type: string
+        fileSize:
+          type: integer
+          format: int64
+        initialVersion:
+          $ref: "#/components/schemas/PreviousVersion"
+        lastModifiedAt:
+          type: string
+          format: date-time
+        originalFilename:
+          type: string
+        pageId:
+          type: string
+        previousVersion:
+          $ref: "#/components/schemas/PreviousVersion"
+        s3Key:
+          type: string
+        thumbnailKey:
+          type: string
+        uploadedAt:
+          type: string
+          format: date-time
+    PhoneConnectionResponse:
+      type: object
+      properties:
+        expiresAt:
+          type: integer
+          format: int64
+        message:
+          type: string
+    PreviousVersion:
+      type: object
+      properties:
+        fileSize:
+          type: integer
+          format: int64
+        lastModifiedAt:
+          type: string
+          format: date-time
+        s3Key:
+          type: string
+        thumbnailKey:
+          type: string
+    ReorderRequest:
+      type: object
+      properties:
+        pageIds:
+          type: array
+          items:
+            type: string
+    ReorderResponse:
+      type: object
+      properties:
+        expiresAt:
+          type: integer
+          format: int64
+        message:
+          type: string
+        totalPages:
+          type: integer
+          format: int32
+    RotateResponse:
+      type: object
+      properties:
+        expiresAt:
+          type: integer
+          format: int64
+        maxTotalBytes:
+          type: integer
+          format: int64
+        message:
+          type: string
+        totalBytes:
+          type: integer
+          format: int64
+        undoAvailable:
+          type: boolean
+    ServerSentEventString: {}
+    SessionView:
+      type: object
+      properties:
+        maxPages:
+          type: integer
+          format: int32
+        maxTotalBytes:
+          type: integer
+          format: int64
+        session:
+          $ref: "#/components/schemas/UploadSession"
+        sizeProfile:
+          type: string
+          enum:
+          - S
+          - M
+          - L
+          - XL
+        totalBytes:
+          type: integer
+          format: int64
+    UndoResponse:
+      type: object
+      properties:
+        expiresAt:
+          type: integer
+          format: int64
+        maxTotalBytes:
+          type: integer
+          format: int64
+        message:
+          type: string
+        totalBytes:
+          type: integer
+          format: int64
+        undoAvailable:
+          type: boolean
+    UploadSession:
+      type: object
+      properties:
+        createdAt:
+          type: string
+          format: date-time
+        documentId:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        originatorIp:
+          type: string
+        pageCounter:
+          type: integer
+          format: int32
+        pages:
+          type: array
+          items:
+            $ref: "#/components/schemas/PageInfo"
+        phoneConnected:
+          type: boolean
+        sizeProfile:
+          type: string
+          enum:
+          - S
+          - M
+          - L
+          - XL
+        status:
+          type: string
+          enum:
+          - OPEN
+          - FINALIZING
+          - FINALIZED
+        statusUntil:
+          type: string
+          format: date-time
+        token:
+          type: string
+    WhiteBalanceResponse:
+      type: object
+      properties:
+        expiresAt:
+          type: integer
+          format: int64
+        maxTotalBytes:
+          type: integer
+          format: int64
+        message:
+          type: string
+        totalBytes:
+          type: integer
+          format: int64
+        undoAvailable:
+          type: boolean

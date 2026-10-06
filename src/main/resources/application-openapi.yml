@@ -1,0 +1,41 @@
+# Profil utilisé uniquement pour la génération automatique de la spec OpenAPI.
+# Fournit des valeurs factices pour les dépendances externes (S3, TLS)
+# afin de permettre le démarrage de l'application sans infrastructure.
+
+spring:
+  cloud:
+    aws:
+      credentials:
+        access-key: openapi-dummy
+        secret-key: openapi-dummy
+      s3:
+        bucket: openapi-dummy
+        endpoint: http://localhost:9000
+  ssl:
+    bundle:
+      jks:
+        trustStore:
+          truststore:
+            location: classpath:openapi-dummy-truststore.p12
+            password: changeit
+  autoconfigure:
+    # Cette liste REMPLACE celle d'application.yml (pas de fusion des listes
+    # YAML entre documents) : il faut donc répéter ici toutes les exclusions
+    # de la conf principale.
+    exclude:
+      - org.springframework.boot.autoconfigure.hazelcast.HazelcastAutoConfiguration
+      - org.springframework.boot.security.oauth2.server.resource.autoconfigure.reactive.ReactiveOAuth2ResourceServerAutoConfiguration
+      - org.springframework.boot.security.oauth2.server.resource.autoconfigure.OAuth2ResourceServerAutoConfiguration
+
+springdoc:
+  # springdoc n'est sur le classpath que sous le profil Maven openapi-generation.
+  # Spec servie sur le port métier : le springdoc-openapi-maven-plugin télécharge
+  # http://localhost:8080/api/v3/api-docs.yaml (cf. pom.xml).
+  use-management-port: false
+  api-docs:
+    enabled: true
+    resolve-schema-properties: true
+  swagger-ui:
+    enabled: true
+  writer-with-default-pretty-printer: true
+  writer-with-order-by-keys: true

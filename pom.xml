@@ -1,0 +1,693 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.1</version>
+        <relativePath />
+    </parent>
+    <groupId>ch.ge.ael</groupId>
+    <artifactId>ge-televerse-back</artifactId>
+    <!-- Versionnage « ci-friendly » : la version n'est pas commitée, elle est
+         calculée depuis les tags git par la chaîne d'intégration et passée via
+         -Drevision. Un build local sans -Drevision prend la valeur par défaut
+         définie plus bas (0.0.0-LOCAL-SNAPSHOT). -->
+    <version>${revision}</version>
+    <name>ge-televerse-back</name>
+    <description>Backend de GE-Televerse</description>
+
+    <properties>
+        <java.version>21</java.version>
+        <!-- Défaut pour les builds locaux / IDE ; la CI passe -Drevision=X.Y.Z… -->
+        <revision>0.0.0-LOCAL-SNAPSHOT</revision>
+        <!-- Hazelcast 5.4.0, en deçà de la 5.5.0 managée par Boot : « contrainte
+             dure, blocage licence » d'après l'étude de migration vers Boot 4
+             (mai 2026). Ne pas s'aligner sur Boot sans avoir levé cette
+             contrainte. Le code n'emploie
+             que l'API Java de base (IMap, ITopic, client / embarqué), sans
+             hazelcast-spring. -->
+        <hazelcast.version>5.4.0</hazelcast.version>
+        <jetbrains-annotations.version>24.1.0</jetbrains-annotations.version>
+        <jacoco.version>0.8.15</jacoco.version>
+        <!-- Valeur de repli de @{argLine} (Surefire) quand prepare-agent ne tourne pas
+             (-Djacoco.skip=true) : sans elle, « @{argLine} » partirait tel quel dans
+             la ligne de commande de la JVM de test, qui refuserait de démarrer. -->
+        <argLine></argLine>
+        <resilience4j.version>2.4.0</resilience4j.version>
+        <!-- Override de la version Netty managée par spring-boot-dependencies.
+             Corrige des CVE sur la stack Netty transitive (reactor-netty, via
+             spring-boot-starter-webflux) : d'abord netty-codec-dns, puis
+             CVE-2026-42587 sur netty-codec-http (corrigée en 4.2.15+). Bumper
+             toute la stack plutôt que le seul artefact vulnérable : les modules
+             Netty sont co-publiés et doivent rester alignés, et la propriété est
+             consommée par le BOM Boot pour tous les io.netty:* d'un coup.
+             4.2.18 : posée par le correctif NexusIQ a0b63f3 (CVE HTTP/2, HTTP/3
+             et QUIC), au-delà de la 4.2.17 qu'embarque Boot 4.1.1. -->
+        <netty.version>4.2.18.Final</netty.version>
+
+        <!-- Autres overrides de versions managées par spring-boot-dependencies,
+             pour solder des alertes AppSec / NexusIQ. Chaque override est à retirer
+             dès que le parent Boot embarque au moins la même version. Boot 4.1.1
+             couvre désormais Spring Framework 7.0.9, Spring Security 7.1.1,
+             Micrometer 1.17.1, Reactor 2025.0.7 et logback 1.5.38, posés à la main
+             par le correctif AppSec c6e46cb : ces cinq surcharges sont retirées.
+             Pour Reactor, rester sur la propriété du BOM (reactor-bom.version) si
+             une surcharge redevient nécessaire : elle garde reactor-test et tous
+             les modules alignés.
+             - logback 1.6.3 : seule version corrigeant CVE-2026-19880 (rapport
+               NexusIQ du 24.09.2026 ; traversée de répertoire par le MDCDiscriminator
+               d'un SiftingAppender — non employé ici, mais la ligne 1.5 ne sera pas
+               corrigée). Palier mineur au-dessus de la 1.5.x de Boot 4.1, qui n'est
+               pas testé contre la 1.6 (elle retire des API dépréciées). Validé le
+               24.09 : suite complète — contexte Spring compris, donc le
+               LogbackLoggingSystem de Boot —, chargement de logback-spring.xml par
+               Joran (LogMaskingTest) et démarrage réel de l'application sur la
+               configuration de production, sans statut WARN/ERROR de logback. À
+               revalider à chaque montée de Boot ; à retirer dès que Boot manage une
+               1.6.3 ou plus.
+             - jackson 3.2.3 et 2.22.3 : plancher de CVE-2026-89425 (jackson-core,
+               DataInput), CVE-2026-89407 (ReDoS NumberInput, 2.x), CVE-2026-91776
+               et CVE-2026-91777 (databind), rapport NexusIQ du 24.09.2026. Posées
+               d'abord en 3.2.2 / 2.22.2 par le correctif NexusIQ a0b63f3 (CVE-2026-
+               54514, -54515, -59889). Palier mineur au-dessus de celui de Boot 4.1
+               (3.1.x / 2.21.x) : toute montée se valide par la suite de tests
+               complète, contexte Spring compris. Jackson 2 n'est plus dans le jar
+               de production : il n'arrive que par swagger-core (springdoc), cantonné
+               au profil openapi-generation — la surcharge 2.x ne vaut plus que pour
+               la génération de la spec. Le code applicatif ne consomme que les
+               annotations com.fasterxml.jackson.annotation.*, que Jackson 3 tire
+               lui-même.
+             Plus de surcharge log4j : log4j-api n'est plus sur le classpath (cf.
+             l'exclusion de log4j-to-slf4j sur spring-boot-starter-logging). -->
+        <logback.version>1.6.3</logback.version>
+        <jackson-bom.version>3.2.3</jackson-bom.version>
+        <jackson-2-bom.version>2.22.3</jackson-2-bom.version>
+        <!-- springdoc (profil openapi-generation) et swagger-core qu'il embarque :
+             à monter ensemble. -->
+        <springdoc.version>3.1.0</springdoc.version>
+        <swagger-core.version>2.2.52</swagger-core.version>
+
+        <!-- Build settings -->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.build.timestamp.format>yyyyMMdd</maven.build.timestamp.format>
+
+        <!-- SCM — dépôt public de référence (miroir GitHub des sources).
+             Propriété unique et surchargeable : une chaîne d'intégration qui aurait
+             besoin de pointer son propre dépôt passe -Dscm.url=<son URL> sans
+             modifier ce fichier. Aucun goal de ce build ne lit <scm> (ni
+             maven-release-plugin ni maven-scm-plugin ne sont déclarés, et le
+             scanner Sonar fait sa blame depuis le .git du répertoire de travail) :
+             c'est de la métadonnée à destination des lecteurs du POM. -->
+        <scm.url>https://github.com/republique-et-canton-de-geneve/ge-televerse-back</scm.url>
+    </properties>
+
+    <scm>
+        <connection>scm:git:${scm.url}.git</connection>
+        <developerConnection>scm:git:${scm.url}.git</developerConnection>
+        <url>${scm.url}</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <developers>
+        <developer>
+            <name>EdG</name>
+            <email>opensource@etat.ge.ch</email>
+            <organization>Etat de Geneve, Switzerland</organization>
+            <organizationUrl>https://ge.ch</organizationUrl>
+        </developer>
+    </developers>
+
+    <!-- Cible de `mvn deploy`. L'URL n'est PAS dans ce dépôt : la propriété
+         ${maven2Repository_projet} est fournie par le settings.xml du poste ou de
+         la chaîne d'intégration qui déploie. Sans cette propriété, `mvn deploy`
+         échoue — les phases utiles aux contributeurs (`package`, `test`, `verify`)
+         n'en dépendent pas. -->
+    <distributionManagement>
+        <repository>
+            <id>internal.project.release</id>
+            <url>${maven2Repository_projet}/project_release</url>
+        </repository>
+        <snapshotRepository>
+            <id>internal.project.snapshot</id>
+            <url>${maven2Repository_projet}/project_snapshot</url>
+        </snapshotRepository>
+    </distributionManagement>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- 2.55.4 : le SDK embarque sa propre copie de jackson-core, relocalisée
+                 (third-party-jackson-core), à la version de sa propriété
+                 jackson.version — 2.21.4 en 2.54.18, affectée par CVE-2026-68498
+                 (maxNameLength appliqué trop tard, corrigée en 2.21.6) ainsi que
+                 CVE-2026-89425 et CVE-2026-89407 (corrigées en 2.21.7). 2.55.4
+                 embarque la 2.21.7. Cette copie échappe aux propriétés jackson du
+                 BOM Boot : seule une montée du SDK la corrige. -->
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>bom</artifactId>
+                <version>2.55.4</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- ==================== Spring Boot ==================== -->
+        <!-- Tire aussi spring-boot-starter-reactor-netty (serveur Reactor Netty). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+        <!-- Déclaré ici, au premier niveau, pour que l'exclusion ci-dessous s'applique
+             quel que soit le starter qui l'amène. log4j-to-slf4j (et avec lui
+             log4j-api) ne sert qu'aux bibliothèques qui journalisent par l'API Log4j :
+             aucune ici. Toutes les références du classpath sont des détections
+             facultatives (commons-logging, Netty, jboss-logging, Micrometer, Spring
+             Boot) qui retombent sur SLF4J ; Hazelcast n'emploie ses fabriques Log4j que
+             si hazelcast.logging.type le demande (non posé : JUL, relayé vers SLF4J).
+             Retirer l'API solde le constat NexusIQ sonatype-2026-006746 (log4j-api
+             2.26.1, CWE-502), sans version corrigée à viser. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-logging</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.logging.log4j</groupId>
+                    <artifactId>log4j-to-slf4j</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <!-- ==================== OAuth2 / OIDC ==================== -->
+        <!-- Resource server OIDC pour le GET /api/documents/{id} exposé aux apps
+             hôtes : valide le JWT via le JWKS du fournisseur d'identité de
+             l'État (jwk-set-uri / issuer-uri injectés par le manifest) et
+             impose la présence de l'audience AEL.TELEVERSE. Les autres routes
+             restent ouvertes (verrou same-origin déjà assuré par CORS). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+
+        <!-- ==================== Actuator & Monitoring ==================== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- ==================== Admission control (bulkhead) ==================== -->
+        <!-- Resilience4j Bulkhead protège l'endpoint d'upload : limite stricte du
+             nombre de requêtes en vol par pod, fast-fail 429 + Retry-After au-delà.
+             Soulage la pression RAM (multipart 100 MB + PDFBox) le temps que
+             l'autoscaler monte de nouveaux pods. Métriques Micrometer
+             auto-exposées : resilience4j_bulkhead_available_concurrent_calls. -->
+        <!-- resilience4j-bulkhead est tiré en transitif via -reactor mais en scope
+             runtime ; déclaration explicite pour le mettre sur le classpath compile. -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-bulkhead</artifactId>
+            <version>${resilience4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-reactor</artifactId>
+            <version>${resilience4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-micrometer</artifactId>
+            <version>${resilience4j.version}</version>
+        </dependency>
+
+        <!-- ==================== Hazelcast ==================== -->
+        <!-- Cluster distribué : IMap des sessions + ITopic pour la diffusion
+             cross-pod des événements d'upload. API Java pure, indépendante
+             de Spring Framework. L'instance est câblée manuellement par
+             HazelcastConfiguration avec un @Bean profilé (embedded en dev,
+             client K8s en prod), donc l'auto-configuration Spring Boot reste
+             désactivée via spring.autoconfigure.exclude. -->
+        <dependency>
+            <groupId>com.hazelcast</groupId>
+            <artifactId>hazelcast</artifactId>
+            <version>${hazelcast.version}</version>
+        </dependency>
+
+        <!-- ==================== Dev tools ==================== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-devtools</artifactId>
+            <scope>runtime</scope>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains</groupId>
+            <artifactId>annotations</artifactId>
+            <version>${jetbrains-annotations.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Amazon S3 -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <!-- L'application n'utilise que S3AsyncClient, sur un
+                 NettyNioAsyncHttpClient construit explicitement (S3Configuration) :
+                 le client HTTP synchrone du SDK est du poids mort intégral, et il
+                 tire httpclient5 → httpcore5 / httpcore5-h2 (CVE-2026-54399,
+                 CVE-2026-54428). Le SDK a renommé cet artefact apache-client →
+                 apache5-client, ce qui avait silencieusement désarmé l'exclusion
+                 historique. On garde les deux noms : l'ancien ne coûte rien et
+                 couvre le cas où le SDK le réintroduirait. -->
+            <exclusions>
+                <exclusion>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>apache-client</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>apache5-client</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>netty-nio-client</artifactId>
+        </dependency>
+
+        <!-- ==================== ClamAV ==================== -->
+        <!-- Client INSTREAM clamd (TCP 3310, protocole binaire natif). Apache-2.0,
+             ~60 KB, aucune transitive. La lib n'expose pas de timeout connexion ;
+             le probe au démarrage l'enveloppe dans un Future borné côté
+             AntivirusService pour éviter qu'un firewall blackhole ne fige le pod. -->
+        <dependency>
+            <groupId>xyz.capybara</groupId>
+            <artifactId>clamav-client</artifactId>
+            <version>2.1.2</version>
+        </dependency>
+
+        <!-- Apache PDFBox -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>3.0.8</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>commons-logging</groupId>
+                    <artifactId>commons-logging</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <!-- metadata-extractor : lecture du tag EXIF Orientation des JPEG envoyés
+             par les téléphones. ImageIO.read() ignore l'EXIF, donc une photo
+             portrait stockée comme 4000x2252 + Orientation=6 arrive en
+             "paysage" côté Java. On lit le tag pour appliquer la rotation
+             correcte avant d'embarquer l'image dans le PDF. -->
+        <dependency>
+            <groupId>com.drewnoakes</groupId>
+            <artifactId>metadata-extractor</artifactId>
+            <version>2.21.0</version>
+        </dependency>
+
+        <!-- ==================== OpenCV via bytedeco/javacpp-presets ==================== -->
+        <!-- Natives embarquées dans le jar applicatif (linux-x86_64 pour la production,        -->
+        <!-- windows-x86_64 ajouté via profil Maven pour le développement local).               -->
+        <!-- NE PAS monter en 4.13.0-1.5.13 sans revalider les natives : sur ce palier, le
+             chargement de jniopencv_core échoue sous Windows (UnsatisfiedLinkError, javacpp
+             retombe sur java.library.path), ce qui met en erreur PerspectiveCorrectionServiceTest
+             et WhiteBalanceServiceTest — verts en 1.5.11 sur la même machine. Non tranché sous
+             Linux faute de conteneur au moment du test : la production (UBI) est peut-être
+             indemne, mais le poste de développement Windows ne l'est pas. Revalider les deux
+             plateformes avant de retenter. -->
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>opencv</artifactId>
+            <version>4.10.0-1.5.11</version>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>opencv</artifactId>
+            <version>4.10.0-1.5.11</version>
+            <classifier>linux-x86_64</classifier>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>javacpp</artifactId>
+            <version>1.5.11</version>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>javacpp</artifactId>
+            <version>1.5.11</version>
+            <classifier>linux-x86_64</classifier>
+        </dependency>
+        <!-- Transitive native dependency of opencv_core — must be declared                     -->
+        <!-- explicitly because we picked opencv (+ classifier) instead of opencv-platform.     -->
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>openblas</artifactId>
+            <version>0.3.28-1.5.11</version>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>openblas</artifactId>
+            <version>0.3.28-1.5.11</version>
+            <classifier>linux-x86_64</classifier>
+        </dependency>
+
+        <!-- ==================== ONNX Runtime ==================== -->
+        <!-- Inférence du modèle DocAligner (DocsaidLab, Apache 2.0) pour la détection
+             de documents. opencv_dnn 4.10 ne sait pas charger le neck BiFPN du
+             modèle (parse error sur la fusion pondérée), d'où onnxruntime-java.
+             Microsoft, licence MIT. Natives Windows/Linux/macOS x86_64+arm64
+             embarquées dans le jar. -->
+        <!-- Toute montée se revalide sur les deux plateformes : si l'initialisation des
+             natives échoue (déjà vu sous Windows : « une routine d'initialisation d'une DLL a
+             échoué »), le constructeur de DocAlignerDocumentDetector avale l'erreur et se
+             contente de logguer « DocAligner unavailable » — la détection de documents est
+             alors silencieusement désactivée, sans échec au démarrage. Seuls
+             DocAlignerDocumentDetectorTest (dont le cas sur photo réelle ne tourne pas en
+             CI) et ce log au démarrage le révèlent. 1.27.0 : tests verts sous Windows le
+             24.09.2026. -->
+        <dependency>
+            <groupId>com.microsoft.onnxruntime</groupId>
+            <artifactId>onnxruntime</artifactId>
+            <version>1.27.0</version>
+        </dependency>
+
+        <!-- ==================== OpenAPI ==================== -->
+        <!-- springdoc n'est PAS dans le jar de production : il n'y servait que la
+             Swagger UI interne (:9000/actuator/swagger-ui) et amenait Jackson 2 par
+             swagger-core, qui n'existe pas sur Jackson 3 — avec lui les constats
+             NexusIQ de la ligne 2.x à chaque rapport. Il vit dans le profil
+             openapi-generation, qui génère docs/openapi/ (et sert la Swagger UI en
+             local). Restent ici les seuls types que le code emploie : les annotations
+             (@Operation) et les modèles d'OpenApiConfiguration — ni l'un ni l'autre
+             ne tire Jackson 2 (les modèles n'amènent que jackson-annotations, déjà
+             requis par Jackson 3). Version alignée sur celle du springdoc du profil. -->
+        <dependency>
+            <groupId>io.swagger.core.v3</groupId>
+            <artifactId>swagger-annotations-jakarta</artifactId>
+            <version>${swagger-core.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.swagger.core.v3</groupId>
+            <artifactId>swagger-models-jakarta</artifactId>
+            <version>${swagger-core.version}</version>
+        </dependency>
+
+        <!-- ==================== Test ==================== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.projectreactor</groupId>
+            <artifactId>reactor-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <profiles>
+        <!-- Natives Windows pour le développement local et les tests sur postes Windows -->
+        <profile>
+            <id>natives-windows</id>
+            <activation>
+                <os><family>windows</family></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>opencv</artifactId>
+                    <version>4.10.0-1.5.11</version>
+                    <classifier>windows-x86_64</classifier>
+                </dependency>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>javacpp</artifactId>
+                    <version>1.5.11</version>
+                    <classifier>windows-x86_64</classifier>
+                </dependency>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>openblas</artifactId>
+                    <version>0.3.28-1.5.11</version>
+                    <classifier>windows-x86_64</classifier>
+                </dependency>
+            </dependencies>
+        </profile>
+
+        <!-- Génération automatique de la spec OpenAPI via springdoc-openapi-maven-plugin.
+             Usage : mvn verify -Popenapi-generation -Dopenapi-generation=true
+             Seul endroit où springdoc est sur le classpath (cf. la section OpenAPI des
+             dépendances) : Swagger UI locale avec
+             mvn spring-boot:run -Dopenapi-generation=true -Dspring-boot.run.profiles=dev,openapi
+             puis http://localhost:8080/api/swagger-ui.html                           -->
+        <profile>
+            <id>openapi-generation</id>
+            <activation>
+                <property>
+                    <name>openapi-generation</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>org.springdoc</groupId>
+                    <artifactId>springdoc-openapi-starter-webflux-ui</artifactId>
+                    <version>${springdoc.version}</version>
+                </dependency>
+            </dependencies>
+            <build>
+                <plugins>
+                    <!-- ProductionClasspathTest vérifie justement que springdoc et Jackson 2
+                         sont absents du classpath : sous ce profil, ils y sont par
+                         construction. -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <excludes>
+                                <exclude>**/ProductionClasspathTest.java</exclude>
+                            </excludes>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.springframework.boot</groupId>
+                        <artifactId>spring-boot-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>openapi-start</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>start</goal>
+                                </goals>
+                                <configuration>
+                                    <jvmArguments>-Dspring.profiles.active=dev,openapi</jvmArguments>
+                                    <wait>2000</wait>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>openapi-stop</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>stop</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.springdoc</groupId>
+                        <artifactId>springdoc-openapi-maven-plugin</artifactId>
+                        <version>1.5</version>
+                        <executions>
+                            <execution>
+                                <id>generate-openapi</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>generate</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <apiDocsUrl>http://localhost:8080/api/v3/api-docs.yaml</apiDocsUrl>
+                            <outputFileName>openapi-ge-televerse.yaml</outputFileName>
+                            <outputDir>${basedir}/docs/openapi</outputDir>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
+    <build>
+        <finalName>ge-televerse-${project.version}</finalName>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>**/version.txt</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>**/version.txt</exclude>
+                </excludes>
+            </resource>
+        </resources>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <release>${java.version}</release>
+                    <compilerArgs>
+                        <arg>-proc:full</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>repackage</id>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>build-info</id>
+                        <goals>
+                            <goal>build-info</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <!-- Désactive le RestartClassLoader de devtools quand on lance via
+                         `mvn spring-boot:run`, sinon Hazelcast lève une ClassCastException
+                         (le même type est chargé deux fois, par RestartClassLoader et
+                         AppClassLoader). Ne s'applique qu'aux runs Maven : un lancement
+                         depuis un IDE conserve le hot reload. -->
+                    <jvmArguments>-Dspring.devtools.restart.enabled=false</jvmArguments>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- @{argLine} (évaluation tardive) : reprend l'agent JaCoCo posé par
+                         prepare-agent. Un argLine littéral l'écraserait et la couverture
+                         retomberait à 0 % sans aucune erreur. -->
+                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar}</argLine>
+                    <systemPropertyVariables>
+                        <java.util.logging.config.file>${project.basedir}/src/test/resources/logging.properties</java.util.logging.config.file>
+                        <!-- Depuis Spring Boot 4.1, le truststore d'un bundle SSL est chargé
+                             dès le rafraîchissement du contexte, alors que 4.0 le différait.
+                             Le bundle pointe sur ${javax.net.ssl.trustStore}, propriété
+                             posée par l'image de production mais absente de la JVM de test :
+                             le placeholder non résolu était alors ouvert littéralement comme
+                             nom de fichier (FileNotFoundException), et tout test chargeant le
+                             contexte complet échouait. On réutilise ici le truststore factice
+                             déjà employé par le profil dev. -->
+                        <javax.net.ssl.trustStore>${project.basedir}/src/main/resources/openapi-dummy-truststore.p12</javax.net.ssl.trustStore>
+                        <javax.net.ssl.trustStorePassword>changeit</javax.net.ssl.trustStorePassword>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Résout ${revision} en version littérale dans le POM installé/déployé
+                 (versionnage ci-friendly, cf. commentaire sur <version> plus haut) -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <version>1.7.3</version>
+                <configuration>
+                    <flattenMode>resolveCiFriendliesOnly</flattenMode>
+                    <updatePomFile>true</updatePomFile>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>flatten</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>flatten</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>flatten.clean</id>
+                        <phase>clean</phase>
+                        <goals>
+                            <goal>clean</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Couverture de tests pour Sonar. Sans rapport JaCoCo, Sonar affichait
+                 0 % malgré la suite complète exécutée dans le job, et la quality gate
+                 (couverture < 60 %) restait rouge. prepare-agent pose l'agent dans la
+                 propriété argLine, que Surefire reprend via @{argLine} (cf. sa
+                 configuration) ; report écrit target/site/jacoco/jacoco.xml, chemin
+                 par défaut du scanner, dès la phase test — le job sonar ne lance que
+                 `package`, jamais `verify`. 0.8.15 : requise pour instrumenter sous
+                 les JDK 25 (CI) et 26 (postes). -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

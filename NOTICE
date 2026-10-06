@@ -1,0 +1,25 @@
+GE-Televerse-Back
+Copyright (c) État de Genève
+
+This product is licensed under the Apache License, Version 2.0
+(see LICENSE for the full text).
+
+================================================================================
+Third-party works redistributed with this product
+================================================================================
+
+1. DocAligner — modèle de détection des coins de document
+   Source : https://github.com/DocsaidLab/DocAligner
+   Auteur : DocsaidLab
+   Licence : Apache License 2.0
+   Fichier embarqué : src/main/resources/models/lcnet100_h_e_bifpn_256_fp32.onnx
+   Utilisation : inférence des 4 coins d'un document via une heatmap 4 canaux,
+                 intégré dans ch.ge.ael.geteleverse.service.DocAlignerDocumentDetector.
+
+2. ONNX Runtime — moteur d'inférence
+   Source : https://github.com/microsoft/onnxruntime
+   Auteur : Microsoft Corporation
+   Licence : MIT License
+   Distribution : dépendance Maven com.microsoft.onnxruntime:onnxruntime
+
+================================================================================
