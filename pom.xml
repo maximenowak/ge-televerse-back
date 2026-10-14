@@ -91,6 +91,8 @@
         <!-- Build settings -->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.build.timestamp.format>yyyyMMdd</maven.build.timestamp.format>
+        <!-- Value by default (ex: macosx-arm64, linux-x86_64, etc.) -->
+        <javacpp.platform>${os.detected.classifier}</javacpp.platform>
 
         <!-- SCM — dépôt public de référence (miroir GitHub des sources).
              Propriété unique et surchargeable : une chaîne d'intégration qui aurait
@@ -345,7 +347,7 @@
             <groupId>org.bytedeco</groupId>
             <artifactId>opencv</artifactId>
             <version>4.10.0-1.5.11</version>
-            <classifier>linux-x86_64</classifier>
+            <classifier>${javacpp.platform}</classifier>
         </dependency>
         <dependency>
             <groupId>org.bytedeco</groupId>
@@ -356,7 +358,7 @@
             <groupId>org.bytedeco</groupId>
             <artifactId>javacpp</artifactId>
             <version>1.5.11</version>
-            <classifier>linux-x86_64</classifier>
+            <classifier>${javacpp.platform}</classifier>
         </dependency>
         <!-- Transitive native dependency of opencv_core — must be declared                     -->
         <!-- explicitly because we picked opencv (+ classifier) instead of opencv-platform.     -->
@@ -369,8 +371,7 @@
             <groupId>org.bytedeco</groupId>
             <artifactId>openblas</artifactId>
             <version>0.3.28-1.5.11</version>
-            <classifier>linux-x86_64</classifier>
-        </dependency>
+            <classifier>macosx-arm64</classifier>        </dependency>
 
         <!-- ==================== ONNX Runtime ==================== -->
         <!-- Inférence du modèle DocAligner (DocsaidLab, Apache 2.0) pour la détection
@@ -453,6 +454,30 @@
                     <classifier>windows-x86_64</classifier>
                 </dependency>
             </dependencies>
+        </profile>
+        <profile>
+            <id>mac-arm64</id>
+            <activation>
+                <os>
+                    <family>mac</family>
+                    <arch>aarch64</arch>
+                </os>
+            </activation>
+            <properties>
+                <javacpp.platform>macosx-arm64</javacpp.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>linux-x86_64</id>
+            <activation>
+                <os>
+                    <family>unix</family>
+                    <arch>amd64</arch>
+                </os>
+            </activation>
+            <properties>
+                <javacpp.platform>linux-x86_64</javacpp.platform>
+            </properties>
         </profile>
 
         <!-- Génération automatique de la spec OpenAPI via springdoc-openapi-maven-plugin.
