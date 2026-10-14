@@ -87,7 +87,7 @@ class DocAlignerDocumentDetectorTest {
                 "Fixture absente du classpath : /fixtures/p1-avec-distorsion.jpg — test sauté");
 
         var image = ImageIO.read(resourceUrl);
-        assertThat(image)gi
+        assertThat(image)
                 .as("Le fichier image n'a pas pu être décodé")
                 .isNotNull();
 
