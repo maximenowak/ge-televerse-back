@@ -91,8 +91,11 @@
         <!-- Build settings -->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.build.timestamp.format>yyyyMMdd</maven.build.timestamp.format>
-        <!-- Value by default (ex: macosx-arm64, linux-x86_64, etc.) -->
-        <javacpp.platform>${os.detected.classifier}</javacpp.platform>
+        <!-- Classifier des natives bytedeco/javacpp (opencv, javacpp, openblas).
+             Défaut = plateforme de production (image Docker Linux x86_64).
+             Surchargé par les profils OS ci-dessous (mac-arm64, linux-x86_64)
+             selon la machine de build/test. -->
+        <javacpp.platform>linux-x86_64</javacpp.platform>
 
         <!-- SCM — dépôt public de référence (miroir GitHub des sources).
              Propriété unique et surchargeable : une chaîne d'intégration qui aurait
@@ -371,7 +374,8 @@
             <groupId>org.bytedeco</groupId>
             <artifactId>openblas</artifactId>
             <version>0.3.28-1.5.11</version>
-            <classifier>macosx-arm64</classifier>        </dependency>
+            <classifier>${javacpp.platform}</classifier>
+        </dependency>
 
         <!-- ==================== ONNX Runtime ==================== -->
         <!-- Inférence du modèle DocAligner (DocsaidLab, Apache 2.0) pour la détection
